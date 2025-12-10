@@ -10,7 +10,7 @@ import {
     Browsers,
     jidNormalizedUser,
     fetchLatestBaileysVersion
-} from '@whiskeysockets/baileys';
+} from 'baileys';
 
 const router = express.Router();
 
