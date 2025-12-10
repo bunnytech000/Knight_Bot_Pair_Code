@@ -1,12 +1,22 @@
 import express from 'express';
 import fs from 'fs';
 import pino from 'pino';
-import { makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore, Browsers, jidNormalizedUser, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import pn from 'awesome-phonenumber';
+import {
+    makeWASocket,
+    useMultiFileAuthState,
+    delay,
+    makeCacheableSignalKeyStore,
+    Browsers,
+    jidNormalizedUser,
+    fetchLatestBaileysVersion
+} from '@whiskeysockets/baileys';
 
 const router = express.Router();
 
-// Ensure the session directory exists
+/* ===========================
+   REMOVE SESSION DIRECTORY 
+=========================== */
 function removeFile(FilePath) {
     try {
         if (!fs.existsSync(FilePath)) return false;
@@ -16,168 +26,190 @@ function removeFile(FilePath) {
     }
 }
 
+/* ===========================
+        MAIN ROUTE
+=========================== */
 router.get('/', async (req, res) => {
     let num = req.query.number;
-    let dirs = './' + (num || `session`);
 
-    // Remove existing session if present
-    await removeFile(dirs);
+    if (!num) return res.status(400).send({ error: "Missing ?number=" });
 
-    // Clean the phone number - remove any non-digit characters
+    let dirs = './' + num;
+
+    // Remove session folder first
+    removeFile(dirs);
+
+    // Cleanup the number
     num = num.replace(/[^0-9]/g, '');
 
-    // Validate the phone number using awesome-phonenumber
+    // Validate
     const phone = pn('+' + num);
     if (!phone.isValid()) {
-        if (!res.headersSent) {
-            return res.status(400).send({ code: 'Invalid phone number. Please enter your full international number (e.g., 15551234567 for US, 447911123456 for UK, 84987654321 for Vietnam, etc.) without + or spaces.' });
-        }
-        return;
+        return res.status(400).send({
+            code:
+                'Invalid phone number. Enter full international format without + (e.g., 263775000000)'
+        });
     }
-    // Use the international number format (E.164, without '+')
+
+    // Use E.164 format (without "+")
     num = phone.getNumber('e164').replace('+', '');
 
+    console.log("📞 CLEAN NUMBER:", num);
+
+    /* ===========================
+       INIT SESSION + PAIRING
+    =========================== */
     async function initiateSession() {
         const { state, saveCreds } = await useMultiFileAuthState(dirs);
 
         try {
-            const { version, isLatest } = await fetchLatestBaileysVersion();
-            let KnightBot = makeWASocket({
+            const { version } = await fetchLatestBaileysVersion();
+
+            const KnightBot = makeWASocket({
                 version,
                 auth: {
                     creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
+                    keys: makeCacheableSignalKeyStore(
+                        state.keys,
+                        pino({ level: "fatal" })
+                    ),
                 },
                 printQRInTerminal: false,
+                browser: Browsers.macOS('Desktop'),
                 logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-                browser: Browsers.windows('Chrome'),
                 markOnlineOnConnect: false,
-                generateHighQualityLinkPreview: false,
-                defaultQueryTimeoutMs: 60000,
-                connectTimeoutMs: 60000,
-                keepAliveIntervalMs: 30000,
-                retryRequestDelayMs: 250,
-                maxRetries: 5,
             });
 
+            /* ===========================
+                  CONNECTION HANDLER
+            =========================== */
             KnightBot.ev.on('connection.update', async (update) => {
-                const { connection, lastDisconnect, isNewLogin, isOnline } = update;
+                const { connection, lastDisconnect } = update;
 
                 if (connection === 'open') {
-                    console.log("✅ Connected successfully!");
-                    console.log("📱 Sending session file to user...");
-                    
+                    console.log("✅ Connected!");
+
                     try {
-                        const sessionKnight = fs.readFileSync(dirs + '/creds.json');
-
-                        // Send session file to user
+                        /* ===========================
+                              SEND SESSION FILE
+                        =========================== */
+                        const sessionData = fs.readFileSync(dirs + "/creds.json");
                         const userJid = jidNormalizedUser(num + '@s.whatsapp.net');
-                        await KnightBot.sendMessage(userJid, {
-                            document: sessionKnight,
-                            mimetype: 'application/json',
-                            fileName: 'creds.json'
-                        });
-                        console.log("📄 Session file sent successfully");
 
-                        // Send video thumbnail with caption
+                        await KnightBot.sendMessage(userJid, {
+                            document: sessionData,
+                            mimetype: "application/json",
+                            fileName: "creds.json"
+                        });
+
+                        console.log("📄 Session file sent.");
+
+                        /* ===========================
+                              SEND THUMBNAIL
+                        =========================== */
                         await KnightBot.sendMessage(userJid, {
                             image: { url: 'https://img.youtube.com/vi/-oz_u1iMgf8/maxresdefault.jpg' },
-                            caption: `🎬 *KnightBot MD V2.0 Full Setup Guide!*\n\n🚀 Bug Fixes + New Commands + Fast AI Chat\n📺 Watch Now: https://youtu.be/NjOipI2AoMk`
+                            caption:
+                                `🎬 *KnightBot MD V2 Setup Guide*\n\n` +
+                                `🚀 Fast AI + Bug Fixes\n📺 Watch: https://youtu.be/NjOipI2AoMk`
                         });
-                        console.log("🎬 Video guide sent successfully");
 
-                        // Send warning message
+                        console.log("🎬 Guide sent.");
+
+                        /* ===========================
+                              SEND WARNING
+                        =========================== */
                         await KnightBot.sendMessage(userJid, {
-                            text: `⚠️Do not share this file with anybody⚠️\n 
-┌┤✑  Thanks for using Knight Bot
-│└────────────┈ ⳹        
-│©2025 Mr Unique Hacker 
-└─────────────────┈ ⳹\n\n`
+                            text:
+                                `⚠️ *Do NOT share this file with anyone!*\n\n` +
+                                `┌┤✑ Thanks for using Knight Bot\n` +
+                                `│└────────────┈ ⳹\n` +
+                                `│©2025 Mr Unique Hacker\n` +
+                                `└─────────────────┈ ⳹`
                         });
-                        console.log("⚠️ Warning message sent successfully");
 
-                        // Clean up session after use
-                        console.log("🧹 Cleaning up session...");
+                        console.log("⚠️ Warning sent.");
+
+                        /* ===========================
+                           CLEANUP SESSION FOLDER
+                        =========================== */
                         await delay(1000);
                         removeFile(dirs);
-                        console.log("✅ Session cleaned up successfully");
-                        console.log("🎉 Process completed successfully!");
-                        // Do not exit the process, just finish gracefully
-                    } catch (error) {
-                        console.error("❌ Error sending messages:", error);
-                        // Still clean up session even if sending fails
+                        console.log("🧹 Session cleaned.");
+
+                    } catch (err) {
+                        console.error("❌ Failed to send session:", err);
                         removeFile(dirs);
-                        // Do not exit the process, just finish gracefully
                     }
                 }
 
-                if (isNewLogin) {
-                    console.log("🔐 New login via pair code");
-                }
-
-                if (isOnline) {
-                    console.log("📶 Client is online");
-                }
-
+                // Handle disconnects
                 if (connection === 'close') {
                     const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-                    if (statusCode === 401) {
-                        console.log("❌ Logged out from WhatsApp. Need to generate new pair code.");
-                    } else {
-                        console.log("🔁 Connection closed — restarting...");
+                    if (statusCode !== 401) {
+                        console.log("🔁 Restarting...");
                         initiateSession();
+                    } else {
+                        console.log("❌ Session logged out.");
                     }
                 }
             });
 
+            /* ===========================
+                 REQUEST PAIRING CODE
+            =========================== */
             if (!KnightBot.authState.creds.registered) {
-                await delay(3000); // Wait 3 seconds before requesting pairing code
-                num = num.replace(/[^\d+]/g, '');
-                if (num.startsWith('+')) num = num.substring(1);
+                await delay(2000);
 
                 try {
                     let code = await KnightBot.requestPairingCode(num);
+
+                    // Format 4-4-4
                     code = code?.match(/.{1,4}/g)?.join('-') || code;
+
                     if (!res.headersSent) {
-                        console.log({ num, code });
-                        await res.send({ code });
+                        console.log("🔐 Pairing code:", code);
+                        return res.send({ code });
                     }
-                } catch (error) {
-                    console.error('Error requesting pairing code:', error);
-                    if (!res.headersSent) {
-                        res.status(503).send({ code: 'Failed to get pairing code. Please check your phone number and try again.' });
-                    }
+                } catch (err) {
+                    console.error("❌ Pairing error:", err);
+                    if (!res.headersSent) return res.status(500).send({
+                        error: "Failed to get pairing code"
+                    });
                 }
             }
 
-            KnightBot.ev.on('creds.update', saveCreds);
-        } catch (err) {
-            console.error('Error initializing session:', err);
-            if (!res.headersSent) {
-                res.status(503).send({ code: 'Service Unavailable' });
-            }
+            KnightBot.ev.on("creds.update", saveCreds);
+
+        } catch (error) {
+            console.error("❌ Error initiating session:", error);
+            if (!res.headersSent) res.status(500).send({ error: "Service unavailable" });
         }
     }
 
-    await initiateSession();
+    initiateSession();
 });
 
-// Global uncaught exception handler
+/* ===========================
+  IGNORED ERRORS
+=========================== */
 process.on('uncaughtException', (err) => {
     let e = String(err);
-    if (e.includes("conflict")) return;
-    if (e.includes("not-authorized")) return;
-    if (e.includes("Socket connection timeout")) return;
-    if (e.includes("rate-overlimit")) return;
-    if (e.includes("Connection Closed")) return;
-    if (e.includes("Timed Out")) return;
-    if (e.includes("Value not found")) return;
-    if (e.includes("Stream Errored")) return;
-    if (e.includes("Stream Errored (restart required)")) return;
-    if (e.includes("statusCode: 515")) return;
-    if (e.includes("statusCode: 503")) return;
-    console.log('Caught exception: ', err);
+    const ignore = [
+        "conflict",
+        "not-authorized",
+        "Socket connection timeout",
+        "rate-overlimit",
+        "Connection Closed",
+        "Timed Out",
+        "Value not found",
+        "Stream Errored",
+        "statusCode: 515",
+        "statusCode: 503"
+    ];
+    if (ignore.some(v => e.includes(v))) return;
+    console.log("Caught exception:", err);
 });
 
 export default router;
